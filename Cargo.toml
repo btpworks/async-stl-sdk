@@ -1,0 +1,57 @@
+[package]
+edition = "2021"
+name = "async-stl-client"
+version = "0.7.5"
+
+[lib]
+name = "async_stl_client"
+path = "src/lib.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-trait = { version = "0.1" }
+derivative = { version = "2.2" }
+futures = { version = "0.3" }
+hex = { version = "0.4" }
+k256 = { version = "0.11", features = [
+  "default",
+  "arithmetic",
+  "ecdsa",
+  "pkcs8",
+  "sha256",
+  "std",
+  "pem",
+  "serde",
+] }
+lazy_static = { version = "1.4" }
+lru = { version = "0.10" }
+pin-project-lite = { version = "0.2" }
+pinvec = { version = "0.1" }
+pow_of_2 = { version = "0.1" }
+prost = { version = "0.10" }
+rand = { version = "0.8", features = ["getrandom"] }
+rand_core = { version = "0.6" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+thiserror = { version = "1.0.38" }
+tmq = { version = "0.3" } # This will be used side by side with sawtooth-sdk-rust until we replace its zmq dependency
+tokio = { version = "1.27", features = [
+  "time",
+  "macros",
+  "rt-multi-thread",
+  "sync",
+] }
+tokio-stream = { version = "0.1.11", features = ["sync"] }
+tracing = { version = "0.1" }
+uuid = { version = "1.2", features = ["v4"] }
+zmq = { version = "0.9" } # This will be used side by side with sawtooth-sdk-rust until we replace its zmq dependency, so need 0.9
+
+[build-dependencies]
+glob = { version = "0.3.1" }
+prost-build = { version = "0.10" }
+
+
+[dev-dependencies]
+chronicle-telemetry = { git = "https://github.com/btpworks/chronicle" }
+portpicker = { version = "0.1" }
