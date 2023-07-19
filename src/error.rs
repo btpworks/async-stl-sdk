@@ -81,4 +81,7 @@ pub enum SawtoothCommunicationError {
 
     #[error("Tmq {0}")]
     TmqError(#[from] tmq::TmqError),
+
+    #[error("Signing {0}")]
+    Signing(#[from] anyhow::Error),
 }

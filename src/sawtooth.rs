@@ -3,9 +3,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use futures::Future;
 use k256::{
-    ecdsa::{Signature, SigningKey},
-    schnorr::signature::Signer,
+    ecdsa::VerifyingKey,
     sha2::{Digest, Sha256, Sha512},
 };
 use prost::Message;
@@ -145,45 +145,59 @@ impl MessageBuilder {
         request
     }
 
-    #[instrument(skip(self))]
-    pub fn wrap_tx_as_sawtooth_batch(&self, tx: Transaction, signer: &SigningKey) -> Batch {
+    #[instrument(skip(self, signer))]
+    pub async fn wrap_tx_as_sawtooth_batch<
+        F: Fn(Arc<Vec<u8>>) -> Fut,
+        Fut: Future<Output = Result<Vec<u8>, E>>,
+        E,
+    >(
+        &self,
+        tx: Transaction,
+        verifying_key: VerifyingKey,
+        signer: F,
+    ) -> Result<Batch, E> {
         let mut batch = Batch::default();
 
         let mut header = BatchHeader::default();
 
-        let pubkey = hex::encode(signer.verifying_key().to_bytes());
+        let pubkey = hex::encode(verifying_key.to_bytes());
         header.transaction_ids = vec![tx.header_signature.clone()];
         header.signer_public_key = pubkey;
 
-        let encoded_header = header.encode_to_vec();
-        let s: Signature = signer.sign(&encoded_header);
-        let s = s.normalize_s().unwrap_or(s);
-        let s = hex::encode(s.as_ref());
+        let encoded_header: Arc<Vec<_>> = header.encode_to_vec().into();
+        let s = signer(encoded_header.clone()).await?;
+        let s = hex::encode(s);
 
         trace!(batch_header=?header, batch_header_signature=?s, transactions = ?tx);
 
         batch.transactions = vec![tx];
-        batch.header = encoded_header;
+        batch.header = Arc::into_inner(encoded_header).unwrap();
         batch.header_signature = s;
 
-        batch
+        Ok(batch)
     }
 
     #[instrument(skip(payload, signer), level = "trace")]
-    pub async fn make_sawtooth_transaction<P: TransactionPayload + std::fmt::Debug>(
+    pub async fn make_sawtooth_transaction<
+        P: TransactionPayload + std::fmt::Debug,
+        E,
+        SignFn: Fn(&[u8]) -> SignFuture,
+        SignFuture: Future<Output = Result<Vec<u8>, E>>,
+    >(
         &self,
         input_addresses: Vec<String>,
         output_addresses: Vec<String>,
         dependencies: Vec<String>,
         payload: &P,
-        signer: &SigningKey,
-    ) -> (Transaction, TransactionId) {
+        verifying_key: VerifyingKey,
+        signer: SignFn,
+    ) -> Result<(Transaction, TransactionId), E> {
         let bytes = payload.to_bytes().await.unwrap();
 
         let mut hasher = Sha512::new();
         hasher.update(&bytes);
 
-        let pubkey = hex::encode(signer.verifying_key().to_bytes());
+        let pubkey = hex::encode(verifying_key.to_bytes());
 
         let header = TransactionHeader {
             batcher_public_key: pubkey.clone(),
@@ -198,20 +212,19 @@ impl MessageBuilder {
         };
 
         let encoded_header = header.encode_to_vec();
-        let s: Signature = signer.sign(&encoded_header);
-        let s = s.normalize_s().unwrap_or(s);
+        let s = signer(&encoded_header).await?;
 
-        let s = hex::encode(s.to_vec());
+        let s = hex::encode(s);
 
         debug!(transaction_header=?header, transaction_header_signature=?s);
 
-        (
+        Ok((
             Transaction {
                 header: encoded_header,
                 header_signature: s.clone(),
                 payload: bytes,
             },
             TransactionId::new(s),
-        )
+        ))
     }
 }

@@ -12,12 +12,15 @@ use futures::{
 };
 use prost::Message;
 
-use crate::messages::{
-    message::MessageType, Batch, Block, BlockHeader, ClientBatchSubmitRequest,
-    ClientBatchSubmitResponse, ClientBlockGetResponse, ClientBlockListResponse,
-    ClientEventsSubscribeResponse, ClientStateGetResponse, EventList, Transaction,
+use crate::{
+    messages::{
+        message::MessageType, Batch, Block, BlockHeader, ClientBatchSubmitRequest,
+        ClientBatchSubmitResponse, ClientBlockGetResponse, ClientBlockListResponse,
+        ClientEventsSubscribeResponse, ClientStateGetResponse, EventList,
+    },
+    sawtooth::TransactionPayload,
 };
-use k256::ecdsa::SigningKey;
+use k256::ecdsa::VerifyingKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -197,27 +200,26 @@ impl LedgerEvent for () {
 
 #[async_trait::async_trait]
 pub trait LedgerTransaction {
-    fn signer(&self) -> &SigningKey;
+    type Error: std::error::Error + Send + Sync + 'static;
+    async fn sign(&self, bytes: Arc<Vec<u8>>) -> Result<Vec<u8>, Self::Error>;
+    async fn verifying_key(&self) -> Result<VerifyingKey, Self::Error>;
     fn addresses(&self) -> Vec<String>;
     async fn as_sawtooth_tx(
         &self,
         message_builder: &MessageBuilder,
-    ) -> (crate::messages::Transaction, TransactionId);
+    ) -> Result<(crate::messages::Transaction, TransactionId), Self::Error>;
 }
 
 #[async_trait::async_trait]
 pub trait LedgerWriter {
     type Error: std::error::Error;
-    type Transaction: LedgerTransaction;
-
-    // Pre-submit is used to get the transaction id before submitting the transaction
-    async fn pre_submit(
-        &self,
-        tx: &Self::Transaction,
-    ) -> Result<(TransactionId, Transaction), Self::Error>;
+    type Transaction: LedgerTransaction + TransactionPayload;
 
     // Submit is used to submit a transaction to the ledger
-    async fn submit(&self, tx: Transaction, signer: &SigningKey) -> Result<(), Self::Error>;
+    async fn submit(
+        &self,
+        tx: &Self::Transaction,
+    ) -> Result<TransactionId, (Option<TransactionId>, Self::Error)>;
 
     fn message_builder(&self) -> &MessageBuilder;
 }
@@ -284,26 +286,11 @@ where
         Self { writer }
     }
 
-    pub fn pre_submit(
+    pub fn submit(
         &self,
         tx: &W::Transaction,
-    ) -> Result<(TransactionId, Transaction), W::Error> {
-        tokio::runtime::Handle::current().block_on(self.writer.pre_submit(tx))
-    }
-
-    pub fn submit(&self, tx: Transaction, signer: &SigningKey) -> Result<(), W::Error> {
-        tokio::runtime::Handle::current().block_on(self.writer.submit(tx, signer))
-    }
-
-    pub fn do_submit(
-        &self,
-        tx: &W::Transaction,
-        signer: &SigningKey,
     ) -> Result<TransactionId, (Option<TransactionId>, W::Error)> {
-        let (tx_id, tx) = self.pre_submit(tx).map_err(|e| (None, e))?;
-        self.submit(tx, signer)
-            .map_err(|e| (Some(tx_id.clone()), e))?;
-        Ok(tx_id)
+        tokio::runtime::Handle::current().block_on(self.writer.submit(tx))
     }
 }
 
@@ -711,7 +698,7 @@ impl<
 impl<
         Channel: RequestResponseSawtoothChannel + Clone + Send + Sync,
         Event: LedgerEvent + Send + Sync + std::fmt::Debug,
-        Transaction: LedgerTransaction + Send + Sync,
+        Transaction: LedgerTransaction + TransactionPayload + Send + Sync + std::fmt::Debug,
     > LedgerWriter for SawtoothLedger<Channel, Event, Transaction>
 {
     type Error = SawtoothCommunicationError;
@@ -721,22 +708,42 @@ impl<
         &self.builder
     }
 
-    async fn pre_submit(
-        &self,
-        tx: &Self::Transaction,
-    ) -> Result<(TransactionId, crate::messages::Transaction), Self::Error> {
-        let (sawtooth_tx, id) = tx.as_sawtooth_tx(self.message_builder()).await;
-        Ok((id, sawtooth_tx))
-    }
-
     #[instrument(skip(self), level = "trace", ret(Debug))]
     async fn submit(
         &self,
-        tx: crate::messages::Transaction,
-        signer: &SigningKey,
-    ) -> Result<(), Self::Error> {
-        let batch = self.message_builder().wrap_tx_as_sawtooth_batch(tx, signer);
-        self.submit_batch(batch).await?;
-        Ok(())
+        tx: &Self::Transaction,
+    ) -> Result<TransactionId, (Option<TransactionId>, Self::Error)> {
+        let (sawtooth_tx, id) = tx
+            .as_sawtooth_tx(self.message_builder())
+            .await
+            .map_err(|e| {
+                (
+                    None,
+                    SawtoothCommunicationError::Signing(anyhow::Error::from(e)),
+                )
+            })?;
+        let batch = self
+            .message_builder()
+            .wrap_tx_as_sawtooth_batch(
+                sawtooth_tx,
+                tx.verifying_key().await.map_err(|e| {
+                    (
+                        Some(id.clone()),
+                        SawtoothCommunicationError::Signing(e.into()),
+                    )
+                })?,
+                |x| tx.sign(x),
+            )
+            .await
+            .map_err(|e| {
+                (
+                    Some(id.clone()),
+                    SawtoothCommunicationError::Signing(e.into()),
+                )
+            })?;
+        self.submit_batch(batch)
+            .await
+            .map_err(|e| (Some(id.clone()), e))?;
+        Ok(id)
     }
 }

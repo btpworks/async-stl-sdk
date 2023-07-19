@@ -33,7 +33,7 @@ use uuid::Uuid;
 use crate::error::SawtoothCommunicationError;
 
 #[derive(Debug, Clone, Copy)]
-// Control routing behaviour over multiple connections
+// Control routing behavior over multiple connections
 pub enum SendRouting {
     // Ensure this message is routed to all validators - the message will not
     // send unless all validators are connected. This should be used for subscriptions
@@ -52,7 +52,7 @@ pub enum SendRouting {
 #[async_trait::async_trait]
 pub trait RequestResponseSawtoothChannel {
     /// Send a message and wait for a response, decoding the response as a
-    /// protobuf message of type RX.
+    /// Protobuf message of type RX.
     ///
     /// # Arguments
     ///
@@ -76,17 +76,17 @@ pub trait RequestResponseSawtoothChannel {
     ) -> Result<RX, SawtoothCommunicationError>;
 
     /// Send a message and wait for responses from all connected validators, decoding the responses as a
-    /// protobuf message of type RX.
+    /// Protobuf message of type RX.
     ///
     /// # Arguments
     ///
-    /// * tx - The message to send, encoded as a protobuf message of type TX.
+    /// * tx - The message to send, encoded as a Protobuf message of type TX.
     /// * message_type - The message type to send.
     /// * timeout - The maximum amount of time to wait for a response.
     ///
     /// # Returns
     ///
-    /// The response messages, decoded as a protobuf message of type RX.
+    /// The response messages, decoded as a Protobuf message of type RX.
     ///
     /// # Errors
     ///
@@ -100,21 +100,21 @@ pub trait RequestResponseSawtoothChannel {
     ) -> Result<Vec<RX>, SawtoothCommunicationError>;
 
     /// Listens on this channel for messages, decoding them as a
-    /// protobuf message of type `RX`. Terminates when the channel is closed.
+    /// Protobuf message of type `RX`. Terminates when the channel is closed.
     ///
     /// # Returns
     ///
-    /// A stream of response messages, decoded as protobuf messages of type `RX`.
+    /// A stream of response messages, decoded as Protobuf messages of type `RX`.
     ///
     /// # Errors
     ///
     /// Returns an error if the receive operation fails.
     /// Listens on this channel for messages, decoding them as a
-    /// protobuf message of type `RX`. Terminates when the channel is closed.
+    /// Protobuf message of type `RX`. Terminates when the channel is closed.
     ///
     /// # Returns
     ///
-    /// A stream of response messages, decoded as protobuf messages of type `RX`.
+    /// A stream of response messages, decoded as Protobuf messages of type `RX`.
     ///
     /// # Errors
     ///
@@ -223,15 +223,16 @@ enum SocketCommand {
     //Respond to the ping request on connection index
     PingResponse(usize, String),
 
+    // Inform the router of the latest block height
     SetBlockHeight(usize, u64),
-    // Ask for a broadcast channel for unsolicited messages
+    // Ask for a broadcast channel to receive unsolicited messages
     Stream(
         (
             oneshot::Sender<broadcast::Receiver<Arc<MessageAndType>>>,
             MessageType,
         ),
     ),
-
+    // Terminate the communication task
     Shutdown,
 }
 
@@ -382,7 +383,7 @@ impl Router {
         {
             responses.push((connection, (message_type, message.content)));
             if responses.len() == required_responses {
-                let mut responses = responses.drain(..).collect::<Vec<_>>();
+                let mut responses = std::mem::take(&mut responses);
                 responses.sort_by_key(|(i, _)| *i);
                 let responses = responses.into_iter().map(|(_, x)| x).collect::<Vec<_>>();
                 chan.send(responses)
@@ -436,6 +437,7 @@ impl Router {
             .insert(correlation_id.to_string(), (chan, Instant::now()));
         correlation_id
     }
+
     fn expect_n_replies(
         &mut self,
         num_validators: usize,
